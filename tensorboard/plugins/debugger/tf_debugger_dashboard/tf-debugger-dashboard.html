@@ -34,6 +34,7 @@ limitations under the License.
 <link rel="import" href="../tf-imports/lodash.html">
 <link rel="import" href="../tf-runs-selector/tf-runs-selector.html">
 <link rel="import" href="../tf-tensorboard/registry.html">
+<link rel="import" href="health-pills.html">
 <link rel="import" href="tf-debugger-continue-dialog.html">
 <link rel="import" href="tf-debugger-initial-dialog.html">
 <link rel="import" href="tf-debugger-resizer.html">
@@ -157,7 +158,8 @@ limitations under the License.
           <template is="dom-if" if="[[_isTopRightTensorValuesActive]]">
             <tf-tensor-value-multi-view
               id="tensorValueMultiView"
-              continue-to-callback="[[_createContinueToCallback()]]">
+              continue-to-callback="[[_createContinueToCallback()]]"
+              tensor-name-clicked="[[_createNodeClickedHandler()]]">
             </tf-tensor-value-multi-view>
           </template>
         </div>
@@ -320,6 +322,12 @@ limitations under the License.
         padding-right: 3px;
         box-shadow: 3px 3px #ddd;
       }
+      #sessionRunsView {
+        position: relative;
+        width: 100%;
+        overflow: auto;
+        max-height: 25vh;
+      }
       .buttons-container {
         padding: 20px 0;
       }
@@ -374,7 +382,6 @@ limitations under the License.
       }
     </style>
   </template>
-  <script src="health-pills.js"></script>
   <script src="tensor-shape-helper.js"></script>
   <script>
     const _COMPUTE_WINDOW_HEIGHT = () => (
@@ -449,6 +456,12 @@ limitations under the License.
           type: String,
           value: null,
         },
+        // Counts Session Runs in aggregation, regardless of fetch/feed/target.
+        _sessionRunTotalCounter: {
+          type: Number,
+          value: 0,
+        },
+        // Counts Session Runs by their fetch/feed/target combinations.
         _sessionRunCounters: {
           type: Object,
           value: {},
@@ -591,6 +604,26 @@ limitations under the License.
 
         _windowWidth: Number,
         _windowHeight: Number,
+
+        /**
+         * Array of {
+         *   device_name: string,
+         *   node_name: string,
+         *   op_type: ?,
+         *   output_slot: ?,
+         *   debug_op: ?,
+         * }
+         */
+        _debugWatches: Array,
+
+        /**
+         * {
+         *   feeds: Array<string>,
+         *   fetches: Array<string>,
+         *   targets: Array<string>,
+         * }
+         */
+        _latestSessionRun: Object,
       },
 
       observers: [
@@ -651,6 +684,7 @@ limitations under the License.
             } else {
               this._sessionRunCounters[runInfo] = 1;
             }
+            this._sessionRunTotalCounter++;
             this.$.initialDialog.closeDialog();
 
             // Do not refresh node list if we are in continue model and the
@@ -659,7 +693,7 @@ limitations under the License.
                 !this._continueToType || !_.isEqual(previousRunKey, runKey);
             if (toProcessNewSessionRun) {
               this._processGatedGrpcDebugOps(runKey, false);
-              this._showToast('A new Session.run() has begun.');
+              this._announceNewSessionRun();
             }
           } else if (responseType === 'tensor') {
             const deviceName = responseData['device_name'];
@@ -732,7 +766,7 @@ limitations under the License.
             // condition, it'll stop the continuation by setting _continueStop
             // to true.
           } else if (this._continueToType === 'op') {
-            this._processContinueToOp(responseData);
+            this._processContinueToOp(responseType === 'meta', responseData);
           } else if (this._continueToType != null && this._continueToType !== '') {
             console.error('Invalid _continueToType:', this._continueToType);
           }
@@ -750,21 +784,26 @@ limitations under the License.
         }
       },
 
-      _processContinueToOp(responseData) {
+      _processContinueToOp(isSessionRunBeginning, responseData) {
+        if (isSessionRunBeginning) {
+          // A new Session.run() has started, which implies that the requested
+          // tensor was not hit in the previous Session.run, after the
+          // continue-to-tensor action was initiated. Notify the user as such.
+          this._announceNewSessionRun();
+        }
         const deviceName = responseData['device_name'];
-        const maybeBaseExpandedNodeName = responseData[
-            'maybe_base_expanded_node_name'];
-        const nodeNameWithDevice = deviceName + '/' + maybeBaseExpandedNodeName;
-        if (nodeNameWithDevice !== this._continueToTarget) {
-          this._step();
-        } else {
+        const maybeBaseExpandedNodeName = responseData['maybe_base_expanded_node_name'];
+        const notBaseExpandedNodeName =
+            maybeBaseExpandedNodeName == null ? null :
+            tf_debugger_dashboard.removeNodeNameBaseExpansion(maybeBaseExpandedNodeName);
+        if (deviceName + '/' + maybeBaseExpandedNodeName === this._continueToTarget ||
+            deviceName + '/' + notBaseExpandedNodeName === this._continueToTarget) {
           this._clearContinueTo();
           if (this._sourceCodeShown) {
-            this.set(
-                '_sourceFocusNodeName',
-                tf_debugger_dashboard.removeNodeNameBaseExpansion(
-                    maybeBaseExpandedNodeName));
+            this.set('_sourceFocusNodeName', notBaseExpandedNodeName);
           }
+        } else {
+          this._step();
         }
       },
 
@@ -799,7 +838,7 @@ limitations under the License.
           // informing the user of that.
           this.$.initialDialog.openDialog(response.host, response.port);
         }).catch(error => {
-          this.$.initialDialog.renderDebuggerNotEnabledMessage();
+          this.$.initialDialog.openDisabledDialog();
         }).then(() => {
           // Initiate long-polling.
           this.long_poll();
@@ -819,6 +858,10 @@ limitations under the License.
       _showToast(text) {  // TODO(cais): Move to Scrolling Message View.
         this.$.toast.setAttribute('text', text);
         this.$.toast.open();
+      },
+      _announceNewSessionRun() {
+        this._showToast(
+            'Session.run() #' + this._sessionRunTotalCounter + ' is starting.');
       },
 
       _displayGraph(runKey, deviceName) {
@@ -932,7 +975,25 @@ limitations under the License.
           graph.panToNode(nodeName);
         } else {
           // Selecting the node triggers a pan to it.
-          graph.set('selectedNode', nodeName);
+          const nodeMap = graph.get('renderHierarchy').hierarchy.getNodeMap();
+          if (nodeMap[nodeName] == null) {
+            // Some nodes may not be present in the graph scene, due to either
+            // of the two reasons:
+            //   1. A node with other names using its name as name scope may
+            //      not have a base-expanded (i.e., normalized) name in the
+            //      graph visualizer.
+            //   2. The node may fall into a type of nodes automatically
+            //      omitted by the graph visualizer, e.g., certain nodes
+            //      related to TensorBoard summaries.
+            // To deal with case 1, we use the non-expanded node name.
+            // To deal with case 2, we check whether `nodeMap[nodeName]` equal
+            // `null` again before setting `selectedNode` below.
+            nodeName =
+                tf_debugger_dashboard.removeNodeNameBaseExpansion(nodeName);
+          }
+          if (nodeMap[nodeName] != null) {
+            graph.set('selectedNode', nodeName);
+          }
         }
         this.set('_highlightNodeName', deviceName + '/' + nodeName);
       },
@@ -1122,6 +1183,7 @@ limitations under the License.
               tf_debugger_dashboard.removeNodeNameBaseExpansion(cleanNodeName));
         }
         this._setContinueTo('op', nodeNameWithDevice);
+        this.$.continueDialog.updateContinueButtonText(true);
         this._step();
       },
 
@@ -1196,7 +1258,6 @@ limitations under the License.
       // dialog.
       _createSessionRunGo() {
         return (continueNum) => {
-          console.log('Session run go: continueNum=' + continueNum);  // DEBUG
           this._setContinueTo(
               'SessionRun', this._currentSessionRunInfo, continueNum);
           this._step();
@@ -1224,7 +1285,12 @@ limitations under the License.
         };
       },
 
-      _setContinueTo(type, target, counterTarget) {
+      /**
+       * @param {string} type
+       * @param {string} target
+       * @param {number=} counterTarget
+       */
+      _setContinueTo(type, target, counterTarget = -1) {
         this._continueToType = type;
         this._continueToTarget = target;
         this._continueToCounterTarget = counterTarget;

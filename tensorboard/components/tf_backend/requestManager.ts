@@ -14,6 +14,18 @@ limitations under the License.
 ==============================================================================*/
 namespace tf_backend {
 
+
+/*==============================================================================
+
+  Please do not use RequestManager for new code.
+
+  We've generally found code that uses XMLHttpRequest without promises is
+  easier to understand and maintain. This API also makes it difficult to use
+  the HTTP protocol in an idiomatic RESTful manner.
+
+==============================================================================*/
+
+
 interface ResolveReject {
   resolve: Function;
   reject: Function;
@@ -150,7 +162,9 @@ export class RequestManager {
     return new Promise((resolve, reject) => {
       let req = new XMLHttpRequest();
       req.open(postData ? 'POST' : 'GET', url);
-
+      // In case this is a cross-site request, send our credentials
+      // to support any defined CORS policy. 
+      req.withCredentials = true;
       let formData;
       if (postData) {
         // We are to make a POST request.

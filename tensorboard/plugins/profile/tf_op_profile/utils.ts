@@ -40,8 +40,23 @@ export function utilization(node: any) {
   // NaN indicates undefined utilization for fused operations (we can't measure
   // performance inside a fusion). It could also indicate operations with zero
   // time, but they currently don't appear in the profile.
-  if (!node || !node.metrics) return 0/0;
+  if (!node || !node.metrics || !node.metrics.time) return 0/0;
   return node.metrics.flops / node.metrics.time;
+}
+
+export function memoryUtilization(node: any) {
+  // NaN indicates undefined memory utilization (the profile was collected from
+  // older versions of profiler).
+  if (!node || !node.metrics || !node.metrics.memoryBandwidth) return 0/0;
+  return node.metrics.memoryBandwidth;
+}
+
+export function hasMemoryUtilization(node: any) {
+  return node && node.metrics && node.metrics.memoryBandwidth;
+}
+
+export function hasFlops(node: any) {
+  return node && node.metrics && node.metrics.time;
 }
 
 export function percent(fraction: number) {

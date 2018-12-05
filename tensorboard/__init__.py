@@ -22,8 +22,9 @@ from __future__ import print_function
 from tensorboard import lazy
 
 pkg = lambda i: i  # helps google sync process
-mod = lambda i: lazy.LazyLoader(i[i.rindex('.') + 1:], globals(), i)
+mod = lambda i: lazy.LazyLoader(i[i.rindex('.') + 1:], globals(), i)  # noqa: F821
 
+program = mod(pkg('tensorboard.program'))
 summary = mod(pkg('tensorboard.summary'))
 
 del lazy

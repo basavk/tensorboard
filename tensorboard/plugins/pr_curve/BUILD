@@ -13,7 +13,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":protos_all_py_pb2",
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/compat:tensorflow",
     ],
 )
 
@@ -24,10 +24,12 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":metadata",
-        "//tensorboard:expect_tensorflow_installed",
+        ":protos_all_py_pb2",
+        "//tensorboard:expect_numpy_installed",
         "//tensorboard:plugin_util",
         "//tensorboard/backend:http_util",
         "//tensorboard/backend/event_processing:event_accumulator",
+        "//tensorboard/compat:tensorflow",
         "//tensorboard/plugins:base_plugin",
         "@org_pocoo_werkzeug",
         "@org_pythonhosted_six",
@@ -36,7 +38,7 @@ py_library(
 
 py_test(
     name = "pr_curves_plugin_test",
-    size = "small",
+    size = "medium",  # tf integration test
     srcs = ["pr_curves_plugin_test.py"],
     srcs_version = "PY2AND3",
     deps = [

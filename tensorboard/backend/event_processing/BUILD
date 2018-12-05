@@ -12,7 +12,20 @@ py_library(
     srcs = ["io_wrapper.py"],
     srcs_version = "PY2AND3",
     deps = [
+        "//tensorboard/compat:tensorflow",
+        "@org_pythonhosted_six",
+    ],
+)
+
+py_test(
+    name = "io_wrapper_test",
+    size = "small",
+    srcs = ["io_wrapper_test.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":io_wrapper",
         "//tensorboard:expect_tensorflow_installed",
+        "@org_pythonhosted_six",
     ],
 )
 
@@ -22,7 +35,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":io_wrapper",
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/compat:tensorflow",
     ],
 )
 
@@ -58,7 +71,10 @@ py_library(
     name = "event_file_loader",
     srcs = ["event_file_loader.py"],
     srcs_version = "PY2AND3",
-    deps = ["//tensorboard:expect_tensorflow_installed"],
+    deps = [
+        "//tensorboard/compat:tensorflow",
+        "//tensorboard/util:platform_util",
+    ],
 )
 
 py_test(
@@ -83,10 +99,11 @@ py_library(
     deps = [
         ":directory_watcher",
         ":event_file_loader",
+        ":io_wrapper",
         ":plugin_asset_util",
         ":reservoir",
         "//tensorboard:data_compat",
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/compat:tensorflow",
         "//tensorboard/plugins/distribution:compressor",
     ],
 )
@@ -118,6 +135,7 @@ py_test(
         "//tensorboard/plugins/distribution:compressor",
         "//tensorboard/plugins/image:summary",
         "//tensorboard/plugins/scalar:summary",
+        "@org_pythonhosted_six",
     ],
 )
 
@@ -133,7 +151,7 @@ py_library(
         ":directory_watcher",
         ":event_accumulator",
         ":io_wrapper",
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/compat:tensorflow",
         "@org_pythonhosted_six",
     ],
 )
@@ -163,11 +181,53 @@ py_test(
 )
 
 py_library(
+    name = "db_import_multiplexer",
+    srcs = [
+        "db_import_multiplexer.py",
+    ],
+    srcs_version = "PY2AND3",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":directory_watcher",
+        ":event_file_loader",
+        ":io_wrapper",
+        ":sqlite_writer",
+        "//tensorboard:data_compat",
+        "//tensorboard/compat:tensorflow",
+        "@org_pythonhosted_six",
+    ],
+)
+
+py_test(
+    name = "db_import_multiplexer_test",
+    size = "small",
+    srcs = ["db_import_multiplexer_test.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":db_import_multiplexer",
+        "//tensorboard:expect_tensorflow_installed",
+    ],
+)
+
+py_library(
+    name = "sqlite_writer",
+    srcs = [
+        "sqlite_writer.py",
+    ],
+    srcs_version = "PY2AND3",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorboard/compat:tensorflow",
+        "@org_pythonhosted_six",
+    ],
+)
+
+py_library(
     name = "plugin_asset_util",
     srcs = ["plugin_asset_util.py"],
     srcs_version = "PY2AND3",
     deps = [
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/compat:tensorflow",
     ],
 )
 
@@ -177,8 +237,8 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":event_accumulator",
-        ":event_multiplexer",
-        "//tensorboard:expect_tensorflow_installed",
+        ":io_wrapper",
+        "//tensorboard/compat:tensorflow",
     ],
 )
 

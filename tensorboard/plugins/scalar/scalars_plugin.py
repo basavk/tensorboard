@@ -30,11 +30,11 @@ from six import StringIO
 from werkzeug import wrappers
 
 import numpy as np
-import tensorflow as tf
 from tensorboard import plugin_util
 from tensorboard.backend import http_util
 from tensorboard.plugins import base_plugin
 from tensorboard.plugins.scalar import metadata
+from tensorboard.compat import tf
 
 
 class OutputFormat(object):
@@ -75,7 +75,7 @@ class ScalarsPlugin(base_plugin.TBPlugin):
         WHERE Tags.plugin_name = ?
         LIMIT 1
       ''', (metadata.PLUGIN_NAME,))
-      return bool(cursor)
+      return bool(list(cursor))
 
     if not self._multiplexer:
       return False
@@ -93,7 +93,7 @@ class ScalarsPlugin(base_plugin.TBPlugin):
           Tags.display_name,
           Runs.run_name
         FROM Tags
-        LEFT JOIN Runs
+        JOIN Runs
           ON Tags.run_id = Runs.run_id
         WHERE
           Tags.plugin_name = ?
@@ -123,7 +123,7 @@ class ScalarsPlugin(base_plugin.TBPlugin):
 
     return result
 
-  def scalars_impl(self, tag, run, output_format):
+  def scalars_impl(self, tag, run, experiment, output_format):
     """Result of the form `(body, mime_type)`."""
     if self._db_connection_provider:
       db = self._db_connection_provider()
@@ -136,18 +136,21 @@ class ScalarsPlugin(base_plugin.TBPlugin):
           Tensors.data,
           Tensors.dtype
         FROM Tensors
-        LEFT JOIN Tags
+        JOIN Tags
           ON Tensors.series = Tags.tag_id
-        LEFT JOIN Runs
-          ON Tags.run_id = Runs.run_id 
+        JOIN Runs
+          ON Tags.run_id = Runs.run_id
         WHERE
-          Runs.run_name = ?
-          AND Tags.tag_name = ?
-          AND Tags.plugin_name = ?
+          /* For backwards compatibility, ignore the experiment id
+             for matching purposes if it is empty. */
+          (:exp == '' OR Runs.experiment_id == CAST(:exp AS INT))
+          AND Runs.run_name = :run
+          AND Tags.tag_name = :tag
+          AND Tags.plugin_name = :plugin
           AND Tensors.shape = ''
           AND Tensors.step > -1
         ORDER BY Tensors.step
-      ''', (run, tag, metadata.PLUGIN_NAME))
+      ''', dict(exp=experiment, run=run, tag=tag, plugin=metadata.PLUGIN_NAME))
       values = [(wall_time, step, self._get_value(data, dtype_enum))
                 for (step, wall_time, data, dtype_enum) in cursor]
     else:
@@ -191,6 +194,7 @@ class ScalarsPlugin(base_plugin.TBPlugin):
     # TODO: return HTTP status code for malformed requests
     tag = request.args.get('tag')
     run = request.args.get('run')
+    experiment = request.args.get('experiment')
     output_format = request.args.get('format')
-    (body, mime_type) = self.scalars_impl(tag, run, output_format)
+    (body, mime_type) = self.scalars_impl(tag, run, experiment, output_format)
     return http_util.Respond(request, body, mime_type)

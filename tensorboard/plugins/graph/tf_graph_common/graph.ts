@@ -168,7 +168,7 @@ export interface OpNode extends Node {
   // Whether op is compatible with its assigned device.  Currently, if an op
   // is not specified a device, the device is defaulted to the TPU.
   // Furthermore, all ops are considered compatible for CPU and GPU devices,
-  // while a whitelist of compatible ops are specifed for the TPU.
+  // while a whitelist of compatible ops are specified for the TPU.
   // Reference: opValid func in op.ts.
   compatible: boolean;
 
@@ -296,6 +296,12 @@ export interface GroupNode extends Node {
   deviceHistogram: {[device: string]: number};
 
   /**
+   * Stores how many times each XLA cluster name appears in its children
+   * op nodes. Used to color group nodes by XLA clusters.
+   */
+  xlaClusterHistogram: {[device: string]: number};
+
+  /**
    * Stores how many ops in sub-graph were compatible and how many are
    * incompatible.
    */
@@ -316,7 +322,7 @@ export interface Metanode extends GroupNode {
 
   // The name of the function this metanode is associated with if any.
   associatedFunction: string;
-  
+
   getFirstChild(): GroupNode|OpNode;
   getRootOp(): OpNode;
   /** Return name of all leaves inside a metanode. */
@@ -390,7 +396,7 @@ export class OpNodeImpl implements OpNode {
   // This field is only defined if the op node represents an input_arg to a
   // library function. It is the index of the input_arg.
   functionInputIndex: number;
-  
+
   // This field is only defined if the op node represents an output_arg of a
   // library function. It is the index of the output_arg.
   functionOutputIndex: number;
@@ -595,6 +601,7 @@ export class MetanodeImpl implements Metanode {
   templateId: string;
   opHistogram: {[op: string]: number};
   deviceHistogram: {[op: string]: number};
+  xlaClusterHistogram: {[op: string]: number};
   compatibilityHistogram: {compatible: number, incompatible: number};
   parentNode: Node;
   hasNonControlEdges: boolean;
@@ -624,6 +631,7 @@ export class MetanodeImpl implements Metanode {
      */
     this.opHistogram = {};
     this.deviceHistogram = {};
+    this.xlaClusterHistogram = {};
     this.compatibilityHistogram = {compatible: 0, incompatible: 0};
     /** unique id for a metanode of similar subgraph */
     this.templateId = null;
@@ -773,30 +781,40 @@ export class MetaedgeImpl implements Metaedge {
     h.hasShapeInfo = true;
 
     // Sum the sizes of all output tensors.
-    return _(opNode.outputShapes).mapValues((shape: number[]) => {
-      // If the shape is unknown, treat it as 1 when computing
-      // total size. This gives a lower bound for the total size.
-      if (shape == null) {
-        return 1;
-      }
-      // Multiply all shapes to get the total size of the tensor.
-      // E.g. The total size of [4, 2, 1] is 4 * 2 * 1.
-      return _(shape).reduce((accumulated, currSize) => {
-        // If this particular dimension is unknown, treat
-        // it as 1 when computing total size. This gives a lower bound
-        // for the total size.
-        if (currSize === -1) {
-          currSize = 1;
-        }
-        return accumulated * currSize;
-      }, 1);
-    }).sum();
+    // TODO(stephanwlee): Use Object.values after es2017.
+    const values = Object.keys(opNode.outputShapes)
+        .map(k => opNode.outputShapes[k])
+        .map((shape: number[]) => {
+          // If the shape is unknown, treat it as 1 when computing
+          // total size. This gives a lower bound for the total size.
+          if (shape == null) {
+            return 1;
+          }
+          // Multiply all shapes to get the total size of the tensor.
+          // E.g. The total size of [4, 2, 1] is 4 * 2 * 1.
+          return shape.reduce((accumulated, currSize) => {
+            // If this particular dimension is unknown, treat
+            // it as 1 when computing total size. This gives a lower bound
+            // for the total size.
+            if (currSize === -1) {
+              currSize = 1;
+            }
+            return accumulated * currSize;
+          }, 1);
+        });
+    return _.sum(values);
   }
 }
 
-export function createSeriesNode(prefix: string, suffix: string,
-    parent: string, clusterId: number, name: string): SeriesNode {
-  return new SeriesNodeImpl(prefix, suffix, parent, clusterId, name);
+export function createSeriesNode(
+    prefix: string,
+    suffix: string,
+    parent: string,
+    clusterId: number,
+    name: string,
+    graphOptions: graphlib.GraphOptions): SeriesNode {
+  return new SeriesNodeImpl(
+      prefix, suffix, parent, clusterId, name, graphOptions);
 }
 
 export function getSeriesNodeName(prefix: string, suffix: string,
@@ -825,13 +843,19 @@ class SeriesNodeImpl implements SeriesNode {
   bridgegraph: graphlib.Graph<GroupNode|OpNode, Metaedge>;
   parentNode: Node;
   deviceHistogram: {[op: string]: number};
+  xlaClusterHistogram: {[op: string]: number};
   compatibilityHistogram: {compatible: number, incompatible: number};
   hasNonControlEdges: boolean;
   include: InclusionType;
   nodeAttributes: {[key: string]: any;};
 
-  constructor(prefix: string, suffix: string, parent: string,
-      clusterId: number, name: string) {
+  constructor(
+      prefix: string,
+      suffix: string,
+      parent: string,
+      clusterId: number,
+      name: string,
+      graphOptions: graphlib.GraphOptions) {
     this.name = name || getSeriesNodeName(prefix, suffix, parent);
     this.type = NodeType.SERIES;
     this.hasLoop = false;
@@ -842,11 +866,13 @@ class SeriesNodeImpl implements SeriesNode {
     this.parent = parent;
     this.isGroupNode = true;
     this.cardinality = 0;
-    this.metagraph = createGraph<Metanode, Metaedge>(name, GraphType.SERIES);
+    this.metagraph = createGraph<Metanode, Metaedge>(
+        name, GraphType.SERIES, graphOptions);
     // bridgegraph must be constructed lazily-see hierarchy.getBridgegraph()
     this.bridgegraph = null;
     this.parentNode = null;
     this.deviceHistogram = {};
+    this.xlaClusterHistogram = {};
     this.compatibilityHistogram = {compatible: 0, incompatible: 0};
     this.hasNonControlEdges = false;
     this.include = InclusionType.UNSPECIFIED;
@@ -1244,12 +1270,14 @@ export function build(
 /**
  * Create a new graphlib.Graph() instance with default parameters
  */
-export function createGraph<N, E>(name: string, type, opt = {}):
-    graphlib.Graph<N, E> {
-  let graph = new graphlib.Graph<N, E>(opt);
+export function createGraph<N, E>(
+    name: string, type,
+    opt?: graphlib.GraphOptions): graphlib.Graph<N, E> {
+  const graphOptions = opt || {};
+  let graph = new graphlib.Graph<N, E>(graphOptions);
   graph.setGraph({
     name: name,
-    rankdir: 'BT',  // BT,TB,LR,RL
+    rankdir: graphOptions.rankdir || 'BT',  // BT,TB,LR,RL
     type: type
   });
   return graph;

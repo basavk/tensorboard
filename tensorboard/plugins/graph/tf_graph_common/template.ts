@@ -39,16 +39,12 @@ export function detect(h, verifyTemplate): {[templateId: string]: string[]} {
   // Sort the templates by minimum level in the graph at which they appear,
   // as this leads to optimal setting of the colors of each template for
   // maximum differentiation.
-  return <{[templateId: string]: string[]}>_(templates)
-      .pairs()
-      .sortBy(function(pair: {level: number, nodes: string[]}[]) {
-        return pair[1].level;
-      })
-      .map(function(pair: {level: number, nodes: string[]}[]) {
-        return [pair[0], pair[1].nodes];
-      })
-      .object()
-      .value();
+  return <{[templateId: string]: string[]}>Object.keys(templates)
+      .sort(key => templates[key].level)
+      .reduce((obj, key) => {
+        obj[key] = templates[key];
+        return obj;
+      }, {});
 };
 
 /**
@@ -85,27 +81,29 @@ function getSignature(metanode) {
  */
 function clusterSimilarSubgraphs(h: hierarchy.Hierarchy) {
   /** a dict from metanode.signature() => Array of tf.graph.Groups */
-  let hashDict = _(h.getNodeMap()).reduce(
-      (hash, node: OpNode|Metanode, name) => {
+  const map = h.getNodeMap();
+  let hashDict = Object.keys(map).reduce(
+      (reduced: Object, name: string) => {
+    const node: OpNode|GroupNode = map[name];
     if (node.type !== NodeType.META) {
-        return hash;
+      return reduced;
     }
     let levelOfMetaNode = name.split('/').length - 1;
     let signature = getSignature(node);
-    let templateInfo = hash[signature] ||
+    let templateInfo = reduced[signature] ||
       {nodes: [], level: levelOfMetaNode};
-    hash[signature] = templateInfo;
+    reduced[signature] = templateInfo;
     templateInfo.nodes.push(node);
     if (templateInfo.level > levelOfMetaNode) {
       templateInfo.level = levelOfMetaNode;
     }
-    return hash;
+    return reduced;
   }, {});
 
-  return _(hashDict)
-      .pairs()
-      .filter(function(pair: {level: number, nodes: (OpNode|Metanode)[]}) {
-        const nodes = pair[1].nodes;
+  return Object.keys(hashDict)
+      .map(key => [key, hashDict[key]])
+      .filter(([_, subGraph]) => {
+        const {nodes} = subGraph;
         if (nodes.length > 1) {
           // There is more than 1 node with this template. It is worth assigning
           // a unique color to this template.
@@ -119,12 +117,11 @@ function clusterSimilarSubgraphs(h: hierarchy.Hierarchy) {
         return node.type === NodeType.META &&
             (node as Metanode).associatedFunction;
       })
-      .sortBy(function(pair: {level: number, nodes: (OpNode|Metanode)[]}) {
+      .sort(([_, subGraph]) => {
         // sort by depth
         // (all members in the same nnGroup has equal depth)
-        return pair[1].nodes[0].depth;
-      })
-      .value();
+        return subGraph.nodes[0].depth;
+      });
 }
 
 function groupTemplateAndAssignId(nnGroups, verifyTemplate) {
@@ -172,27 +169,15 @@ function groupTemplateAndAssignId(nnGroups, verifyTemplate) {
 
 function sortNodes(names: string[],
     graph: graphlib.Graph<Metanode|OpNode, Metaedge>, prefix: string) {
-  return _.sortByAll(names,
-    function(name) {
-      let node = graph.node(name);
-      return (<OpNode>node).op;
-    },
-    function(name) {
-      let node = graph.node(name);
-      return (<Metanode>node).templateId;
-    },
-    function(name) {
-      return graph.neighbors(name).length;
-    },
-    function(name) {
-      return graph.predecessors(name).length;
-    },
-    function(name) {
-      return graph.successors(name).length;
-    },
-    function(name) {
-      return name.substr(prefix.length);
-    });
+  return _.sortBy(names,
+      [
+        (name) => (graph.node(name) as OpNode).op,
+        (name) => (graph.node(name) as Metanode).templateId,
+        (name) => graph.neighbors(name).length,
+        (name) => graph.predecessors(name).length,
+        (name) => graph.successors(name).length,
+        (name) => name.substr(prefix.length),
+    ]);
 }
 
 function isSimilarSubgraph(g1: graphlib.Graph<any, any>,

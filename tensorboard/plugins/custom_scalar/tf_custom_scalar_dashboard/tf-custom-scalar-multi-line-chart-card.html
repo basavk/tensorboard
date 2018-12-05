@@ -29,6 +29,7 @@ limitations under the License.
 <link rel="import" href="../tf-card-heading/tf-card-heading.html">
 <link rel="import" href="../tf-color-scale/tf-color-scale.html">
 <link rel="import" href="tf-custom-scalar-card-style.html">
+<link rel="import" href="tf-custom-scalar-helpers.html">
 
 <!--
   A card that handles loading data (at the right times), rendering a scalar
@@ -36,24 +37,25 @@ limitations under the License.
 -->
 <dom-module id="tf-custom-scalar-multi-line-chart-card">
 <template>
-  <h1>[[_titleDisplayString]]</h1>
+  <tf-card-heading display-name="[[_titleDisplayString]]"></tf-card-heading>
   <div id="tf-line-chart-data-loader-container">
     <tf-line-chart-data-loader
-      x-type="[[xType]]"
+      id="loader"
+      active="[[active]]"
+      color-scale="[[_colorScale]]"
+      data-series="[[_seriesNames]]"
+      get-data-load-url="[[_dataUrl]]"
+      ignore-y-outliers="[[ignoreYOutliers]]"
+      load-key="[[_tagFilter]]"
+      data-to-load="[[runs]]"
+      log-scale-active="[[_logScaleActive]]"
+      load-data-callback="[[_createProcessDataFunction()]]"
+      request-manager="[[requestManager]]"
       smoothing-enabled="[[smoothingEnabled]]"
       smoothing-weight="[[smoothingWeight]]"
-      tooltip-sorting-method="[[tooltipSortingMethod]]"
-      ignore-y-outliers="[[ignoreYOutliers]]"
-      request-manager="[[requestManager]]"
-      runs="[[runs]]"
-      tag="[[_tagFilter]]"
-      active="[[active]]"
-      data-url="[[_dataUrl]]"
-      log-scale-active="[[_logScaleActive]]"
-      process-data="[[_createProcessDataFunction()]]"
-      color-scale="[[_colorScale]]"
-      data-series="[[_dataSeriesStrings]]"
       symbol-function="[[_createSymbolFunction()]]"
+      tooltip-sorting-method="[[tooltipSortingMethod]]"
+      x-type="[[xType]]"
     >
     </tf-line-chart-data-loader>
   </div>
@@ -83,7 +85,7 @@ limitations under the License.
           selected-item-label="{{_dataSeriesNameToDownload}}"
         >
           <paper-menu class="dropdown-content" slot="dropdown-content">
-            <template is="dom-repeat" items="[[_dataSeriesStrings]]" as="dataSeriesName">
+            <template is="dom-repeat" items="[[_seriesNames]]" as="dataSeriesName">
               <paper-item no-label-float=true>[[dataSeriesName]]</paper-item>
             </template>
           </paper-menu>
@@ -100,7 +102,7 @@ limitations under the License.
   </div>
   <div id="matches-container">
     <div id="matches-list-title">
-      <template is="dom-if" if="[[_dataSeriesStrings.length]]">
+      <template is="dom-if" if="[[_seriesNames.length]]">
         <paper-icon-button
           icon="[[_getToggleMatchesIcon(_matchesListOpened)]]"
           on-click="_toggleMatchesOpen"
@@ -109,14 +111,14 @@ limitations under the License.
       </template>
 
       <span class="matches-text">
-        Matches ([[_dataSeriesStrings.length]])
+        Matches ([[_seriesNames.length]])
       </span>
     </div>
-    <template is="dom-if" if="[[_dataSeriesStrings.length]]">
+    <template is="dom-if" if="[[_seriesNames.length]]">
       <iron-collapse opened="[[_matchesListOpened]]">
         <div id="matches-list">
           <template is="dom-repeat"
-                    items="[[_dataSeriesStrings]]"
+                    items="[[_seriesNames]]"
                     as="seriesName">
               <div class="match-list-entry"
                    style="color: [[_determineColor(_colorScale, seriesName)]];">
@@ -139,7 +141,6 @@ limitations under the License.
     }
 
     #matches-list {
-      font-size: 0.8em;
       max-height: 200px;
       overflow-y: auto;
     }
@@ -159,7 +160,6 @@ limitations under the License.
     }
   </style>
 </template>
-<script src='tf-custom-scalar-helpers.js'></script>
 <script>
   Polymer({
       is: 'tf-custom-scalar-multi-line-chart-card',
@@ -202,29 +202,20 @@ limitations under the License.
         },
 
         /**
-         * Maps from the name of the data series to the DataSeries object.
+         * Maps from some unique name of the data series to the DataSeries
+         * object. It may contain one for a series that is no longer required
+         * for the card (i.e., run that was enabled is now disabled).
          */
         _nameToDataSeries: {
           type: Object,
-          value: {},
+          value: () => ({}),
         },
 
-        /**
-         * A mapping between selected runs (strings) to the value 1. This is
-         * effectively a set of strings.
-         */
-        _selectedRunsSet: {
+        _seriesNames: {
           type: Object,
-          computed: '_computeSelectedRunsSet(runs)',
+          computed: '_computeSeriesNames(_nameToDataSeries, runs)',
         },
-        _dataSeriesStrings: {
-          type: Array,
-          computed: '_computeDataSeriesStrings(_selectedRunsSet, _nameToDataSeries)',
-        },
-        _dataSeriesObjects: {
-          type: Array,
-          computed: '_computeDataSeriesObjects(_nameToDataSeries, _dataSeriesStrings)',
-        },
+
         _expanded: {
           type: Boolean,
           value: false,
@@ -233,9 +224,15 @@ limitations under the License.
         _logScaleActive: Boolean,
         _dataUrl: {
           type: Function,
-          value: () => (tag, run) => tf_backend.addParams(
-              tf_backend.getRouter().pluginRoute(
-                  'custom_scalars', '/scalars'), {tag, run}),
+          value: function() {
+            return (run) => {
+              const tag = this._tagFilter;
+              return tf_backend.addParams(
+                tf_backend.getRouter().pluginRoute(
+                    'custom_scalars', '/scalars'),
+                {tag, run});
+            };
+          },
         },
         /**
          * A mapping from run to the next available symbol for that run. We use
@@ -260,10 +257,10 @@ limitations under the License.
         '_refreshDataSeries(_tagFilter)',
       ],
       reload() {
-        this.$$('tf-line-chart-data-loader').reload();
+        this.$.loader.reload();
       },
       redraw() {
-        this.$$('tf-line-chart-data-loader').redraw();
+        this.$.loader.redraw();
       },
       _toggleExpanded(e) {
         this.set('_expanded', !this._expanded);
@@ -273,21 +270,25 @@ limitations under the License.
         this.set('_logScaleActive', !this._logScaleActive);
       },
       _resetDomain() {
-        const chart = this.$$('tf-line-chart-data-loader');
+        const chart = this.$.loader;
         if (chart) {
           chart.resetDomain();
         }
       },
-      _csvUrl(nameToDataSeries, dataSeriesName) {
-        const baseUrl = this._downloadDataUrl(nameToDataSeries, dataSeriesName);
+      _csvUrl(nameToSeries, dataSeriesName) {
+        if (!dataSeriesName) return '';
+        const baseUrl = this._downloadDataUrl(
+            nameToSeries, dataSeriesName);
         return tf_backend.addParams(baseUrl, {format: 'csv'});
       },
-      _jsonUrl(nameToDataSeries, dataSeriesName) {
-        const baseUrl = this._downloadDataUrl(nameToDataSeries, dataSeriesName);
+      _jsonUrl(nameToSeries, dataSeriesName) {
+        if (!dataSeriesName) return '';
+        const baseUrl = this._downloadDataUrl(
+            nameToSeries, dataSeriesName);
         return tf_backend.addParams(baseUrl, {format: 'json'});
       },
-      _downloadDataUrl(nameToDataSeries, dataSeriesName) {
-        const dataSeries = nameToDataSeries[dataSeriesName];
+      _downloadDataUrl(nameToSeries, dataSeriesName) {
+        const dataSeries = nameToSeries[dataSeriesName];
         const getVars = {
             tag: dataSeries.getTag(),
             run: dataSeries.getRun(),
@@ -312,11 +313,11 @@ limitations under the License.
 
               const seriesName = tf_custom_scalar_dashboard.generateDataSeriesName(
                   run, tag);
-              let series = newMapping[seriesName];
+              const datum = newMapping[seriesName];
 
-              if (series) {
+              if (datum) {
                 // This series already exists.
-                series.setData(data);
+                datum.setData(data);
               } else {
                 if (_.isUndefined(this._runToNextAvailableSymbolIndex[run])) {
                   // The run has not been seen before. Define the next available
@@ -325,11 +326,11 @@ limitations under the License.
                 }
 
                 // Every data series within a run has a unique symbol.
-                const lineChartSymbol = vz_line_chart.SYMBOLS_LIST[
+                const lineChartSymbol = vz_chart_helpers.SYMBOLS_LIST[
                     this._runToNextAvailableSymbolIndex[run]];
 
                 // Create a series with this name.
-                series = new tf_custom_scalar_dashboard.DataSeries(
+                const series = new tf_custom_scalar_dashboard.DataSeries(
                     run,
                     tag,
                     seriesName,
@@ -338,7 +339,7 @@ limitations under the License.
                 newMapping[seriesName] = series;
 
                 // Loop back to the beginning if we are out of symbols.
-                const numSymbols = vz_line_chart.SYMBOLS_LIST.length;
+                const numSymbols = vz_chart_helpers.SYMBOLS_LIST.length;
                 this._runToNextAvailableSymbolIndex[run] =
                     (this._runToNextAvailableSymbolIndex[run] + 1) % numSymbols;
               }
@@ -351,11 +352,10 @@ limitations under the License.
           }
         });
       },
-      _updateChart(nameToDataSeries) {
+      _updateChart(_nameToDataSeries) {
         // Add new data series.
-        _.forOwn(nameToDataSeries, dataSeries => {
-          this.$$('tf-line-chart-data-loader').setSeriesData(
-              dataSeries.getName(), dataSeries.getData());
+        Object.entries(_nameToDataSeries).forEach(([name, series]) => {
+          this.$.loader.setSeriesData(name, series.getData());
         });
       },
       _computeSelectedRunsSet(runs) {
@@ -365,14 +365,11 @@ limitations under the License.
         });
         return mapping;
       },
-      _computeDataSeriesStrings(selectedRunsSet, nameToDataSeries) {
-        return _.values(nameToDataSeries)
-            .filter(series => selectedRunsSet[series.getRun()])
-            .map(series => series.getName());
-      },
-      _computeDataSeriesObjects(nameToDataSeries, dataSeriesStrings) {
-        return dataSeriesStrings.map(
-            seriesName => nameToDataSeries[seriesName]);
+      _computeSeriesNames() {
+        const runLookup = new Set(this.runs);
+        return Object.entries(this._nameToDataSeries)
+            .filter(([_, series]) => runLookup.has(series.run))
+            .map(([name]) => name);
       },
       _determineColor(colorScale, seriesName) {
         return colorScale.scale(seriesName);
@@ -381,11 +378,11 @@ limitations under the License.
         this.set('_nameToDataSeries', {});
       },
       _createSymbolFunction() {
-        return seriesName => (
-            this._nameToDataSeries[seriesName].getSymbol().method());
+        return seriesName =>
+            this._nameToDataSeries[seriesName].getSymbol().method();
       },
-      _determineSymbol(nameToDataSeries, seriesName) {
-        return nameToDataSeries[seriesName].getSymbol().character;
+      _determineSymbol(nameToSeries, seriesName) {
+        return nameToSeries[seriesName].getSymbol().character;
       },
       _computeTagFilter(tagRegexes) {
         if (tagRegexes.length === 1) {

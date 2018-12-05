@@ -15,46 +15,55 @@ limitations under the License.
 namespace tf_backend {
 
 export interface Router {
-  runs: () => string;
-  pluginsListing: () => string;
-  windowProperties: () => string;
   environment: () => string;
-  isDemoMode: () => boolean;
-  pluginRoute: (pluginName: string, route: string) => string;
-}
-;
+  experiments: () => string;
+  pluginRoute: (
+    pluginName: string,
+    route: string,
+    params?: URLSearchParams
+  ) => string;
+  pluginsListing: () => string;
+  runs: () => string;
+  runsForExperiment: (id: tf_backend.ExperimentId) => string;
+};
+
+let _router: Router = createRouter();
 
 /**
  * Create a router for communicating with the TensorBoard backend. You
  * can pass this to `setRouter` to make it the global router.
  *
- * @param dataDir {string} The base prefix for finding data on server.
- * @param demoMode {boolean} Whether to modify urls for filesystem demo usage.
+ * @param dataDir {string=} The base prefix for data endpoints.
  */
-export function createRouter(dataDir = 'data', demoMode = false): Router {
-  if (dataDir[dataDir.length - 1] === '/') {
+export function createRouter(dataDir = "data"): Router {
+  if (dataDir[dataDir.length - 1] === "/") {
     dataDir = dataDir.slice(0, dataDir.length - 1);
   }
-  function standardRoute(route: string, demoExtension = '.json'):
-      ((tag: string, run: string) => string) {
-    return function(tag: string, run: string): string {
-      return dataDir + '/' + addParams(route, {tag, run});
-    };
-  }
-  function pluginRoute(pluginName: string, route: string): string {
-    return `${dataDir}/plugin/${pluginName}${route}`;
-  }
   return {
-    runs: () => dataDir + '/runs' + (demoMode ? '.json' : ''),
-    pluginsListing: () => dataDir + '/plugins_listing',
-    windowProperties: () => dataDir + '/window_properties',
-    environment: () => dataDir + '/environment',
-    isDemoMode: () => demoMode,
-    pluginRoute,
+    environment: () => createDataPath(dataDir, "/environment"),
+    experiments: () => createDataPath(dataDir, "/experiments"),
+    pluginRoute: (
+      pluginName: string,
+      route: string,
+      params?: URLSearchParams
+    ): string => {
+      return createDataPath(
+        dataDir + "/plugin",
+        `/${pluginName}${route}`,
+        params
+      );
+    },
+    pluginsListing: () => createDataPath(dataDir, "/plugins_listing"),
+    runs: () => createDataPath(dataDir, "/runs"),
+    runsForExperiment: (id) => {
+      return createDataPath(
+        dataDir,
+        "/experiment_runs",
+        createSearchParam({experiment: String(id)})
+      );
+    },
   };
-};
-
-let _router: Router = createRouter();
+}
 
 /**
  * @return {Router} the global router
@@ -76,6 +85,30 @@ export function setRouter(router: Router): void {
     throw new Error('Router required, but got: ' + router);
   }
   _router = router;
+}
+
+function createDataPath(
+  dataDir: string,
+  route: string,
+  params: URLSearchParams = new URLSearchParams()
+): string {
+  let relativePath = dataDir + route;
+  if (String(params)) {
+    const delimiter = route.includes("?") ? "&" : "?";
+    relativePath += delimiter + String(params);
+  }
+  return relativePath;
+}
+
+export function createSearchParam(params: QueryParams = {}): URLSearchParams {
+  const keys = Object.keys(params).sort().filter(k => params[k]);
+  const searchParams = new URLSearchParams();
+  keys.forEach(key => {
+    const values = params[key];
+    const array = Array.isArray(values) ? values : [values];
+    array.forEach(val => searchParams.append(key, val));
+  });
+  return searchParams;
 }
 
 }  // namespace tf_backend

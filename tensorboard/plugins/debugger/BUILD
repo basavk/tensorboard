@@ -43,8 +43,8 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":health_pill_calc",
-        "//tensorboard:util",
-        "//tensorboard:expect_numpy_installed"
+        "//tensorboard:expect_numpy_installed",
+        "//tensorboard/util:encoder",
     ],
 )
 
@@ -58,6 +58,7 @@ py_test(
         "//tensorboard:expect_numpy_installed",
         "//tensorboard:expect_tensorflow_installed",
         "//tensorboard/plugins/beholder:im_util",
+        "@org_pythonhosted_six",
     ],
 )
 
@@ -112,9 +113,7 @@ py_library(
     name = "events_writer_manager",
     srcs = ["events_writer_manager.py"],
     srcs_version = "PY2AND3",
-    deps = [
-        "//tensorboard:expect_tensorflow_installed",
-    ],
+    deps = ["//tensorboard:expect_tensorflow_installed"],
 )
 
 py_library(
@@ -192,7 +191,6 @@ py_test(
         "//tensorboard:expect_tensorflow_installed",
     ],
 )
-
 
 py_library(
     name = "debugger_server_lib",
@@ -316,7 +314,7 @@ py_library(
     deps = [
         ":debugger_plugin",
         ":interactive_debugger_plugin",
-        "//tensorboard:expect_tensorflow_installed",
+        "//tensorboard/plugins:base_plugin",
         "@org_pythonhosted_six",
     ],
 )

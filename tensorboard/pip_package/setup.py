@@ -23,17 +23,14 @@ import tensorboard.version
 
 
 REQUIRED_PACKAGES = [
-    'numpy >= 1.12.0',
-    'six >= 1.10.0',
-    'protobuf >= 3.4.0',
-    'werkzeug >= 0.11.10',
-    'html5lib == 0.9999999',  # identical to 1.0b8
-    'markdown >= 2.6.8',
-    'bleach == 1.5.0',
-
     # futures is a backport of the python 3.2+ concurrent.futures module
     'futures >= 3.1.1; python_version < "3"',
-
+    'grpcio >= 1.6.3',
+    'markdown >= 2.6.8',
+    'numpy >= 1.12.0',
+    'protobuf >= 3.4.0',
+    'six >= 1.10.0',
+    'werkzeug >= 0.11.10',
     # python3 specifically requires wheel 0.26
     'wheel; python_version < "3"',
     'wheel >= 0.26; python_version >= "3"',
@@ -44,11 +41,11 @@ CONSOLE_SCRIPTS = [
 ]
 
 def get_readme():
-  with open('tensorboard/pip_package/README.rst') as f:
+  with open('README.rst') as f:
     return f.read()
 
 setup(
-    name='tensorflow-tensorboard',
+    name='tensorboard',
     version=tensorboard.version.VERSION.replace('-', ''),
     description='TensorBoard lets you watch Tensors Flow',
     long_description=get_readme(),
@@ -63,6 +60,9 @@ setup(
     package_data={
         'tensorboard': [
             'webfiles.zip',
+        ],
+        'tensorboard.plugins.beholder': [
+            'resources/*',
         ],
     },
     # Disallow python 3.0 and 3.1 which lack a 'futures' module (see above).

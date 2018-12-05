@@ -24,20 +24,22 @@ from __future__ import print_function
 import collections
 import contextlib
 import functools
+import inspect
 import locale
 import logging
 import os
 import re
 import sys
-import time
 import threading
+import time
 import types  # pylint: disable=unused-import
 
 import six
-import tensorflow as tf
 
 from tensorboard import db
-from tensorboard import util
+from tensorboard.util import platform_util
+from tensorboard.util import util
+import tensorflow as tf
 
 
 class Record(collections.namedtuple('Record', ('record', 'offset'))):
@@ -115,8 +117,12 @@ class RecordReader(object):
     if self._reader is None:
       self._reader = self._open()
     try:
-      with tf.errors.raise_exception_on_not_ok_status() as status:
-        self._reader.GetNext(status)
+      if not inspect.getargspec(self._reader.GetNext).args[1:]: # pylint: disable=deprecated-method
+        self._reader.GetNext()
+      else:
+        # GetNext() expects a status argument on TF <= 1.7
+        with tf.errors.raise_exception_on_not_ok_status() as status:
+          self._reader.GetNext(status)
     except tf.errors.OutOfRangeError:
       # We ignore partial read exceptions, because a record may be truncated.
       # PyRecordReader holds the offset prior to the failed read, so retrying
@@ -140,7 +146,7 @@ class RecordReader(object):
   def _open(self):
     with tf.errors.raise_exception_on_not_ok_status() as status:
       return tf.pywrap_tensorflow.PyRecordReader_New(
-          tf.resource_loader.readahead_file_path(tf.compat.as_bytes(self.path)),
+          platform_util.readahead_file_path(tf.compat.as_bytes(self.path)),
           self._offset, tf.compat.as_bytes(''), status)
 
   def __str__(self):

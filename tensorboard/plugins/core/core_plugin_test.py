@@ -23,66 +23,51 @@ import contextlib
 import json
 import os
 import shutil
+import six
+import sqlite3
+import zipfile
 
 import tensorflow as tf
+
 from werkzeug import test as werkzeug_test
 from werkzeug import wrappers
 
-from tensorboard import db
 from tensorboard.backend import application
 from tensorboard.backend.event_processing import plugin_event_multiplexer as event_multiplexer  # pylint: disable=line-too-long
 from tensorboard.plugins import base_plugin
 from tensorboard.plugins.core import core_plugin
 
 
+FAKE_INDEX_HTML = b'<!doctype html><title>fake-index</title>'
+
+
+class FakeFlags(object):
+  def __init__(
+      self,
+      inspect,
+      logdir='',
+      event_file='',
+      db='',
+      path_prefix=''):
+    self.inspect = inspect
+    self.logdir = logdir
+    self.event_file = event_file
+    self.db = db
+    self.path_prefix = path_prefix
+
+
 class CorePluginTest(tf.test.TestCase):
   _only_use_meta_graph = False  # Server data contains only a GraphDef
 
   def setUp(self):
+    super(CorePluginTest, self).setUp()
     self.temp_dir = self.get_temp_dir()
     self.addCleanup(shutil.rmtree, self.temp_dir)
-
-    self.startLogdirBasedServer(self.temp_dir)
-    self.startDbBasedServer(self.temp_dir)
-
-  def startLogdirBasedServer(self, temp_dir):
-    self.logdir = temp_dir
-    self._generate_test_data(run_name='run1')
-    self.multiplexer = event_multiplexer.EventMultiplexer(
-        size_guidance=application.DEFAULT_SIZE_GUIDANCE,
-        purge_orphaned_data=True)
-    context = base_plugin.TBContext(
-        assets_zip_provider=get_test_assets_zip_provider(),
-        logdir=self.logdir,
-        multiplexer=self.multiplexer,
-        window_title='title foo')
-    self.logdir_based_plugin = core_plugin.CorePlugin(context)
-    app = application.TensorBoardWSGIApp(
-        self.logdir,
-        [self.logdir_based_plugin],
-        self.multiplexer,
-        0,
-        path_prefix='')
-    self.logdir_based_server = werkzeug_test.Client(app, wrappers.BaseResponse)
-
-  def startDbBasedServer(self, temp_dir):
-    self.db_uri = 'sqlite:' + os.path.join(temp_dir, 'db.sqlite')
-    db_module, db_connection_provider = application.get_database_info(
-        self.db_uri)
-    if db_connection_provider is not None:
-      with contextlib.closing(db_connection_provider()) as db_conn:
-        schema = db.Schema(db_conn)
-        schema.create_tables()
-        schema.create_indexes()
-    context = base_plugin.TBContext(
-        assets_zip_provider=get_test_assets_zip_provider(),
-        db_module=db_module,
-        db_connection_provider=db_connection_provider,
-        db_uri=self.db_uri,
-        window_title='title foo')
-    self.db_based_plugin = core_plugin.CorePlugin(context)
-    app = application.TensorBoardWSGI([self.db_based_plugin])
-    self.db_based_server = werkzeug_test.Client(app, wrappers.BaseResponse)
+    self.db_path = os.path.join(self.temp_dir, 'db.db')
+    self.db = sqlite3.connect(self.db_path)
+    self.db_uri = 'sqlite:' + self.db_path
+    self._start_logdir_based_server(self.temp_dir)
+    self._start_db_based_server()
 
   def testRoutesProvided(self):
     """Tests that the plugin offers the correct routes."""
@@ -90,13 +75,42 @@ class CorePluginTest(tf.test.TestCase):
     self.assertIsInstance(routes['/data/logdir'], collections.Callable)
     self.assertIsInstance(routes['/data/runs'], collections.Callable)
 
+  def testFlag(self):
+    loader = core_plugin.CorePluginLoader()
+    loader.fix_flags(FakeFlags(inspect=True, logdir='/tmp'))
+    loader.fix_flags(FakeFlags(inspect=True, event_file='/tmp/event.out'))
+    loader.fix_flags(FakeFlags(inspect=False, logdir='/tmp'))
+    loader.fix_flags(FakeFlags(inspect=False, db='sqlite:foo'))
+    # User can pass both, although the behavior is not clearly defined.
+    loader.fix_flags(FakeFlags(inspect=False, logdir='/tmp', db="sqlite:foo"))
+
+    logdir_or_db_req = r'A logdir or db must be specified'
+    one_of_event_or_logdir_req = r'Must specify either --logdir.*but not both.$'
+    event_or_logdir_req = r'Must specify either --logdir or --event_file.$'
+
+    with six.assertRaisesRegex(self, ValueError, event_or_logdir_req):
+      loader.fix_flags(FakeFlags(inspect=True))
+    with six.assertRaisesRegex(self, ValueError, event_or_logdir_req):
+      loader.fix_flags(FakeFlags(inspect=True, db='sqlite:~/db.sqlite'))
+    with six.assertRaisesRegex(self, ValueError, one_of_event_or_logdir_req):
+      loader.fix_flags(FakeFlags(inspect=True, logdir='/tmp',
+                                 event_file='/tmp/event.out'))
+    with six.assertRaisesRegex(self, ValueError, logdir_or_db_req):
+      loader.fix_flags(FakeFlags(inspect=False))
+    with six.assertRaisesRegex(self, ValueError, logdir_or_db_req):
+      loader.fix_flags(FakeFlags(inspect=False, event_file='/tmp/event.out'))
+
+    flag = FakeFlags(inspect=False, logdir='/tmp', path_prefix='hello/')
+    loader.fix_flags(flag)
+    self.assertEqual(flag.path_prefix, 'hello')
+
   def testIndex_returnsActualHtml(self):
     """Test the format of the /data/runs endpoint."""
     response = self.logdir_based_server.get('/')
     self.assertEqual(200, response.status_code)
     self.assertStartsWith(response.headers.get('Content-Type'), 'text/html')
     html = response.get_data()
-    self.assertStartsWith(html, b'<!doctype html>')
+    self.assertEqual(html, FAKE_INDEX_HTML)
 
   def testDataPaths_disableAllCaching(self):
     """Test the format of the /data/runs endpoint."""
@@ -116,6 +130,17 @@ class CorePluginTest(tf.test.TestCase):
         self.logdir_based_server, '/data/environment')
     self.assertEqual(parsed_object['data_location'], self.logdir)
 
+  def testEnvironmentForModeForDbServer(self):
+    """Tests environment route that returns the mode for db based server."""
+    parsed_object = self._get_json(self.db_based_server, '/data/environment')
+    self.assertEqual(parsed_object['mode'], 'db')
+
+  def testEnvironmentForModeForLogServer(self):
+    """Tests environment route that returns the mode for logdir based server."""
+    parsed_object = self._get_json(
+        self.logdir_based_server, '/data/environment')
+    self.assertEqual(parsed_object['mode'], 'logdir')
+
   def testEnvironmentForWindowTitle(self):
     """Test that the environment route correctly returns the window title."""
     parsed_object_db = self._get_json(
@@ -133,20 +158,63 @@ class CorePluginTest(tf.test.TestCase):
 
   def testRuns(self):
     """Test the format of the /data/runs endpoint."""
+    self._add_run('run1')
+    run_json = self._get_json(self.db_based_server, '/data/runs')
+    self.assertEqual(run_json, ['run1'])
     run_json = self._get_json(self.logdir_based_server, '/data/runs')
     self.assertEqual(run_json, ['run1'])
 
+  def testExperiments(self):
+    """Test the format of the /data/experiments endpoint."""
+    self._add_run('run1', experiment_name = 'exp1')
+    self._add_run('run2', experiment_name = 'exp1')
+    self._add_run('run3', experiment_name = 'exp2')
+
+    [exp1, exp2] = self._get_json(self.db_based_server, '/data/experiments')
+    self.assertEqual(exp1.get('name'), 'exp1')
+    self.assertEqual(exp2.get('name'), 'exp2')
+
+    exp_json = self._get_json(self.logdir_based_server, '/data/experiments')
+    self.assertEqual(exp_json, [])
+
+  def testExperimentRuns(self):
+    """Test the format of the /data/experiment_runs endpoint."""
+    self._add_run('run1', experiment_name = 'exp1')
+    self._add_run('run2', experiment_name = 'exp1')
+    self._add_run('run3', experiment_name = 'exp2')
+
+    [exp1, exp2] = self._get_json(self.db_based_server, '/data/experiments')
+
+    exp1_runs = self._get_json(self.db_based_server,
+        '/data/experiment_runs?experiment=%s' % exp1.get('id'))
+    self.assertEqual(len(exp1_runs), 2);
+    self.assertEqual(exp1_runs[0].get('name'), 'run1');
+    self.assertEqual(exp1_runs[1].get('name'), 'run2');
+    self.assertEqual(len(exp1_runs[0].get('tags')), 1);
+    self.assertEqual(exp1_runs[0].get('tags')[0].get('name'), 'mytag');
+    self.assertEqual(len(exp1_runs[1].get('tags')), 1);
+    self.assertEqual(exp1_runs[1].get('tags')[0].get('name'), 'mytag');
+
+    exp2_runs = self._get_json(self.db_based_server,
+        '/data/experiment_runs?experiment=%s' % exp2.get('id'))
+    self.assertEqual(len(exp2_runs), 1);
+    self.assertEqual(exp2_runs[0].get('name'), 'run3');
+
+    # TODO(stephanwlee): Write test on runs that do not have any tag.
+
+    exp_json = self._get_json(self.logdir_based_server, '/data/experiments')
+    self.assertEqual(exp_json, [])
+
+
   def testRunsAppendOnly(self):
     """Test that new runs appear after old ones in /data/runs."""
-    # We use three runs: the 'run1' that we already created in our
-    # `setUp` method, plus runs with names lexicographically before and
-    # after it (so that just sorting by name doesn't have a chance of
-    # working).
     fake_wall_times = {
         'run1': 1234.0,
         'avocado': 2345.0,
         'zebra': 3456.0,
+        'ox': 4567.0,
         'mysterious': None,
+        'enigmatic': None,
     }
 
     stubs = tf.test.StubOutForTesting()
@@ -166,27 +234,91 @@ class CorePluginTest(tf.test.TestCase):
                    'FirstEventTimestamp',
                    FirstEventTimestamp_stub)
 
-    def add_run(run_name):
-      self._generate_test_data(run_name)
-      self.multiplexer.AddRunsFromDirectory(self.logdir)
-      self.multiplexer.Reload()
+    # Start with a single run.
+    self._add_run('run1')
 
     # Add one run: it should come last.
-    add_run('avocado')
+    self._add_run('avocado')
+    self.assertEqual(self._get_json(self.db_based_server, '/data/runs'),
+                     ['run1', 'avocado'])
     self.assertEqual(self._get_json(self.logdir_based_server, '/data/runs'),
                      ['run1', 'avocado'])
 
     # Add another run: it should come last, too.
-    add_run('zebra')
+    self._add_run('zebra')
+    self.assertEqual(self._get_json(self.db_based_server, '/data/runs'),
+                     ['run1', 'avocado', 'zebra'])
     self.assertEqual(self._get_json(self.logdir_based_server, '/data/runs'),
                      ['run1', 'avocado', 'zebra'])
 
     # And maybe there's a run for which we somehow have no timestamp.
-    add_run('mysterious')
+    self._add_run('mysterious')
+    with self.db:
+      self.db.execute('UPDATE Runs SET started_time=NULL WHERE run_name=?',
+                      ['mysterious'])
+    self.assertEqual(self._get_json(self.db_based_server, '/data/runs'),
+                     ['run1', 'avocado', 'zebra', 'mysterious'])
     self.assertEqual(self._get_json(self.logdir_based_server, '/data/runs'),
                      ['run1', 'avocado', 'zebra', 'mysterious'])
 
-    stubs.UnsetAll()
+    # Add another timestamped run: it should come before the timestamp-less one.
+    self._add_run('ox')
+    self.assertEqual(self._get_json(self.db_based_server, '/data/runs'),
+                     ['run1', 'avocado', 'zebra', 'ox', 'mysterious'])
+    self.assertEqual(self._get_json(self.logdir_based_server, '/data/runs'),
+                     ['run1', 'avocado', 'zebra', 'ox', 'mysterious'])
+
+    # Add another timestamp-less run, lexicographically before the other one:
+    # it should come after all timestamped runs but first among timestamp-less.
+    self._add_run('enigmatic')
+    with self.db:
+      self.db.execute('UPDATE Runs SET started_time=NULL WHERE run_name=?',
+                      ['enigmatic'])
+    self.assertEqual(
+        self._get_json(self.db_based_server, '/data/runs'),
+        ['run1', 'avocado', 'zebra', 'ox', 'enigmatic', 'mysterious'])
+    self.assertEqual(
+        self._get_json(self.logdir_based_server, '/data/runs'),
+        ['run1', 'avocado', 'zebra', 'ox', 'enigmatic', 'mysterious'])
+
+    stubs.CleanUp()
+
+  def _start_logdir_based_server(self, temp_dir):
+    self.logdir = temp_dir
+    self.multiplexer = event_multiplexer.EventMultiplexer(
+        size_guidance=application.DEFAULT_SIZE_GUIDANCE,
+        purge_orphaned_data=True)
+    context = base_plugin.TBContext(
+        assets_zip_provider=get_test_assets_zip_provider(),
+        logdir=self.logdir,
+        multiplexer=self.multiplexer,
+        window_title='title foo')
+    self.logdir_based_plugin = core_plugin.CorePlugin(context)
+    app = application.TensorBoardWSGIApp(
+        self.logdir,
+        [self.logdir_based_plugin],
+        self.multiplexer,
+        0,
+        path_prefix='')
+    self.logdir_based_server = werkzeug_test.Client(app, wrappers.BaseResponse)
+
+  def _start_db_based_server(self):
+    db_module, db_connection_provider = application.get_database_info(
+        self.db_uri)
+    context = base_plugin.TBContext(
+        assets_zip_provider=get_test_assets_zip_provider(),
+        db_module=db_module,
+        db_connection_provider=db_connection_provider,
+        db_uri=self.db_uri,
+        window_title='title foo')
+    self.db_based_plugin = core_plugin.CorePlugin(context)
+    app = application.TensorBoardWSGI([self.db_based_plugin])
+    self.db_based_server = werkzeug_test.Client(app, wrappers.BaseResponse)
+
+  def _add_run(self, run_name, experiment_name='experiment'):
+    self._generate_test_data(run_name, experiment_name)
+    self.multiplexer.AddRunsFromDirectory(self.logdir)
+    self.multiplexer.Reload()
 
   def _get_json(self, server, path):
     response = server.get(path)
@@ -198,7 +330,7 @@ class CorePluginTest(tf.test.TestCase):
                           'application/json')
     return json.loads(response.get_data().decode('utf-8'))
 
-  def _generate_test_data(self, run_name):
+  def _generate_test_data(self, run_name, experiment_name):
     """Generates the test data directory.
 
     The test data has a single run of the given name, containing:
@@ -209,8 +341,6 @@ class CorePluginTest(tf.test.TestCase):
           events.
     """
     run_path = os.path.join(self.logdir, run_name)
-    os.makedirs(run_path)
-
     writer = tf.summary.FileWriter(run_path)
 
     # Add a simple graph event.
@@ -231,6 +361,22 @@ class CorePluginTest(tf.test.TestCase):
     writer.flush()
     writer.close()
 
+    # Write data for the run to the database.
+    # TODO(nickfelt): Figure out why reseting the graph is necessary.
+    tf.reset_default_graph()
+    db_writer = tf.contrib.summary.create_db_writer(
+        db_uri=self.db_path,
+        experiment_name=experiment_name,
+        run_name=run_name,
+        user_name='user')
+    with db_writer.as_default(), tf.contrib.summary.always_record_summaries():
+      tf.contrib.summary.scalar('mytag', 1)
+
+    with tf.Session() as sess:
+      sess.run(tf.global_variables_initializer())
+      sess.run(tf.contrib.summary.summary_writer_initializer_op())
+      sess.run(tf.contrib.summary.all_summary_ops())
+
 
 class CorePluginUsingMetagraphOnlyTest(CorePluginTest):
   # Tests new ability to use only the MetaGraphDef
@@ -238,12 +384,10 @@ class CorePluginUsingMetagraphOnlyTest(CorePluginTest):
 
 
 def get_test_assets_zip_provider():
-  path = os.path.join(tf.resource_loader.get_data_files_path(),
-                      'test_webfiles.zip')
-  if not os.path.exists(path):
-    tf.logging.warning('test_webfiles.zip static assets not found: %s', path)
-    return None
-  return lambda: open(path, 'rb')
+  memfile = six.BytesIO()
+  with zipfile.ZipFile(memfile, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr('index.html', FAKE_INDEX_HTML)
+  return lambda: contextlib.closing(six.BytesIO(memfile.getvalue()))
 
 
 if __name__ == '__main__':

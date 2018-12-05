@@ -25,7 +25,26 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
+# pylint: disable=g-import-not-at-top
+import os
+
+# Disable the TF GCS filesystem cache which interacts pathologically with the
+# pattern of reads used by TensorBoard for logdirs. See for details:
+#   https://github.com/tensorflow/tensorboard/issues/1225
+# This must be set before the first import of tensorflow.
+os.environ['GCS_READ_CACHE_DISABLED'] = '1'
+
+# Use fast C++ implementation of Python protocol buffers. See:
+# https://github.com/protocolbuffers/protobuf/blob/v3.6.0/python/google/protobuf/pyext/README
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'cpp'
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION_VERSION'] = '2'
+# pylint: enable=g-import-not-at-top
+
+import sys
+
+# Import TensorFlow here to fail immediately if it's not present, even though we
+# don't actually use it yet, which results in a clearer error.
+import tensorflow as tf  # pylint: disable=unused-import
 
 from tensorboard import default
 from tensorboard import program
@@ -33,34 +52,19 @@ from tensorboard import program
 
 def run_main():
   """Initializes flags and calls main()."""
-  tf.app.run(main)
-
-
-def main(unused_argv=None):
-  """Standard TensorBoard program CLI.
-
-  See `tensorboard.program.main` for further documentation.
-  """
-  return program.main(default.get_plugins(),
-                      default.get_assets_zip_provider())
-
-
-def create_tb_app(*args, **kwargs):
-  tf.logging.warning('DEPRECATED API: create_tb_app() should now be accessed '
-                     'via the `tensorboard.program` module')
-  return program.create_tb_app(*args, **kwargs)
-
-
-def make_simple_server(*args, **kwargs):
-  tf.logging.warning('DEPRECATED API: make_simple_server() should now be '
-                     'accessed via the `tensorboard.program` module')
-  return program.make_simple_server(*args, **kwargs)
-
-
-def run_simple_server(*args, **kwargs):
-  tf.logging.warning('DEPRECATED API: run_simple_server() should now be '
-                     'accessed via the `tensorboard.program` module')
-  return program.run_simple_server(*args, **kwargs)
+  program.setup_environment()
+  tensorboard = program.TensorBoard(default.get_plugins(),
+                                    program.get_default_assets_zip_provider())
+  try:
+    from absl import app
+    # Import this to check that app.run() will accept the flags_parser argument.
+    from absl.flags import argparse_flags
+    app.run(tensorboard.main, flags_parser=tensorboard.configure)
+    raise AssertionError("absl.app.run() shouldn't return")
+  except ImportError:
+    pass
+  tensorboard.configure(sys.argv)
+  sys.exit(tensorboard.main())
 
 
 if __name__ == '__main__':
